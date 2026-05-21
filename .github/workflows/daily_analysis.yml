@@ -1,0 +1,44 @@
+name: 台股每日分析
+
+on:
+  schedule:
+    # 台灣時間週一到週五 17:30（收盤後），UTC 09:30
+    - cron: '30 9 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: '強制執行（忽略交易日檢查）'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安裝系統依賴
+        run: sudo apt-get install -y wkhtmltopdf
+
+      - name: 安裝 Python 依賴
+        run: pip install -r requirements.txt
+
+      - name: 執行分析
+        env:
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          PUSHOVER_API_TOKEN: ${{ secrets.PUSHOVER_API_TOKEN }}
+          STOCK_LIST: ${{ vars.STOCK_LIST || '2330,2327,2492,3026,2456,2472,2375,8042,5317,2437,2478' }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.0-flash' }}
+        run: python main.py
