@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import json
+import time
 import tempfile
 import logging
 import requests
@@ -55,7 +56,10 @@ def _finmind_get(dataset: str, data_id: str, start_date: str = "", end_date: str
 def fetch_price(stock_id: str, days: int = 80) -> pd.DataFrame:
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    # Try TWSE first, then OTC (上櫃)
     rows = _finmind_get("TaiwanStockPrice", stock_id, start_date, end_date)
+    if not rows:
+        rows = _finmind_get("TaiwanStockPrice", stock_id, start_date, end_date)
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
@@ -72,17 +76,16 @@ def fetch_info(stock_id: str) -> dict:
     return rows[0] if rows else {"stock_name": stock_id, "industry_category": "未知"}
 
 
-def fetch_news(stock_id: str, days: int = 7) -> list:
-    end_date = datetime.now().strftime("%Y-%m-%d")
+def fetch_news(stock_id: str, days: int = 3) -> list:
+    # FinMind TaiwanStockNews: omit end_date, use start_date only
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    return _finmind_get("TaiwanStockNews", stock_id, start_date, end_date)[-8:]
+    return _finmind_get("TaiwanStockNews", stock_id, start_date)[-8:]
 
 
 def fetch_institutional(stock_id: str) -> dict:
-    """三大法人買賣超"""
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
-    rows = _finmind_get("TaiwanStockInstitutionalInvestors", stock_id, start_date, end_date)
+    """三大法人買賣超（最新一日）"""
+    start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    rows = _finmind_get("TaiwanStockInstitutionalInvestors", stock_id, start_date)
     if not rows:
         return {}
     df = pd.DataFrame(rows)
@@ -90,8 +93,11 @@ def fetch_institutional(stock_id: str) -> dict:
     latest = df[df["date"] == df["date"].max()]
     result = {}
     for _, row in latest.iterrows():
-        name = row.get("name", "")
-        buy_sell = row.get("buy") - row.get("sell", 0) if row.get("buy") else 0
+        name = str(row.get("name", ""))
+        try:
+            buy_sell = float(row.get("buy", 0) or 0) - float(row.get("sell", 0) or 0)
+        except (ValueError, TypeError):
+            buy_sell = 0
         if "外資" in name:
             result["foreign"] = buy_sell
         elif "投信" in name:
@@ -209,22 +215,30 @@ RSI(14)：{_fmt(ind.get('rsi'), '.1f')}
 **4. 關鍵價位** — 買點 / 止損 / 目標價（用數字，若無法判斷說明原因）
 **5. 主要風險** — 最重要的1-2個風險點"""
 
-    try:
-        resp = requests.post(
-            GEMINI_URL,
-            params={"key": GEMINI_API_KEY},
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 800},
-            },
-            timeout=60,
-        )
-        result = resp.json()
-        if "candidates" in result:
-            return result["candidates"][0]["content"]["parts"][0]["text"]
-        logger.error(f"{stock_id} Gemini 異常: {json.dumps(result)[:200]}")
-    except Exception as e:
-        logger.error(f"{stock_id} Gemini 失敗: {e}")
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                GEMINI_URL,
+                params={"key": GEMINI_API_KEY},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.3, "maxOutputTokens": 800},
+                },
+                timeout=60,
+            )
+            result = resp.json()
+            if "candidates" in result:
+                return result["candidates"][0]["content"]["parts"][0]["text"]
+            if result.get("error", {}).get("code") == 429:
+                wait = 30 * (attempt + 1)
+                logger.warning(f"{stock_id} Gemini 429，等 {wait}s 後重試")
+                time.sleep(wait)
+                continue
+            logger.error(f"{stock_id} Gemini 異常: {json.dumps(result)[:200]}")
+            break
+        except Exception as e:
+            logger.error(f"{stock_id} Gemini 失敗: {e}")
+            break
     return "⚠️ LLM 分析失敗"
 
 # ─── 報告 HTML ───────────────────────────────────────────────────────────────
@@ -387,7 +401,7 @@ def main():
         sys.exit(1)
 
     results = []
-    for stock_id in STOCK_LIST:
+    for i, stock_id in enumerate(STOCK_LIST):
         logger.info(f"── {stock_id} ──")
         info = fetch_info(stock_id)
         df = fetch_price(stock_id)
@@ -397,6 +411,9 @@ def main():
         ind = calc_indicators(df)
         news = fetch_news(stock_id)
         inst = fetch_institutional(stock_id)
+        # Space out Gemini calls: free tier = 15 RPM, wait 5s between stocks
+        if i > 0 and GEMINI_API_KEY:
+            time.sleep(5)
         llm_result = analyze(
             stock_id,
             info.get("stock_name", stock_id),
