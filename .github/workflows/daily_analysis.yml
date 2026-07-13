@@ -28,7 +28,7 @@ jobs:
           cache: 'pip'
 
       - name: 安裝系統依賴
-        run: sudo apt-get install -y wkhtmltopdf
+        run: sudo apt-get update && sudo apt-get install -y wkhtmltopdf
 
       - name: 安裝 Python 依賴
         run: pip install -r requirements.txt
