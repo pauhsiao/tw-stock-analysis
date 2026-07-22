@@ -28,7 +28,12 @@ jobs:
           cache: 'pip'
 
       - name: 安裝系統依賴
-        run: sudo apt-get update && sudo apt-get install -y wkhtmltopdf
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update && sudo apt-get install -y wkhtmltopdf && break
+            echo "第 $i 次安裝失敗，10 秒後重試..."
+            sleep 10
+          done
 
       - name: 安裝 Python 依賴
         run: pip install -r requirements.txt
