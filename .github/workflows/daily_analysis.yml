@@ -12,6 +12,9 @@ on:
         default: false
         type: boolean
 
+permissions:
+  contents: write
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
@@ -47,3 +50,12 @@ jobs:
           STOCK_LIST: ${{ vars.STOCK_LIST || '2330,2327,2492,3026,2456,2472,2375,8042,5317,2437,2478' }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.0-flash' }}
         run: python main.py
+
+      - name: Keep repo active
+        run: |
+          date "+%Y-%m-%d %H:%M:%S %Z" > last_run.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_run.txt
+          git diff --cached --quiet || git commit -m "chore: update last run timestamp"
+          git push
